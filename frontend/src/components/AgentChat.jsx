@@ -48,6 +48,28 @@ const AGENT_ICONS = {
   'System': '⚙️'
 };
 
+// Clean up message content to make it conversational
+function cleanMessage(content) {
+  if (!content) return '';
+  
+  // Remove JSON-like structures
+  let cleaned = content.replace(/\{"to":\s*"[^"]+",\s*"type":\s*"[^"]+",\s*"content":\s*"([^"]*)"\}/g, '');
+  
+  // Remove TOOL_CALL: syntax but keep it minimal
+  cleaned = cleaned.replace(/TOOL_CALL:\s*web_search\("([^"]*)"\)/g, '🔍 Searching for: $1');
+  cleaned = cleaned.replace(/TOOL_CALL:\s*create_diagram\("([^"]*)"\)/g, '📊 Creating diagram...');
+  cleaned = cleaned.replace(/TOOL_CALL:\s*write_note\("([^"]*)"\)/g, '📝 Writing note...');
+  
+  // Remove [SYSTEM INSTRUCTION] tags (internal)
+  cleaned = cleaned.replace(/\[SYSTEM INSTRUCTION\]:.*?(?=\n|$)/g, '');
+  cleaned = cleaned.replace(/\[SYSTEM\]:.*?(?=\n|$)/g, '');
+  
+  // Clean up extra whitespace
+  cleaned = cleaned.replace(/\n\n\n+/g, '\n\n').trim();
+  
+  return cleaned || content; // Fallback to original if cleaning removed everything
+}
+
 export default function AgentChat({ messages, isRunning }) {
   const scrollRef = useRef(null);
 
@@ -94,6 +116,12 @@ export default function AgentChat({ messages, isRunning }) {
 
         {messages.map((msg, idx) => {
           const style = getAgentStyle(msg.from_agent);
+          const cleanedContent = cleanMessage(msg.content);
+          
+          // Skip empty messages after cleaning
+          if (!cleanedContent || cleanedContent.trim().length === 0) {
+            return null;
+          }
           
           return (
             <div
@@ -136,15 +164,12 @@ export default function AgentChat({ messages, isRunning }) {
                   <span className="text-xs text-gray-600 font-mono font-light">
                     {new Date(msg.timestamp).toLocaleTimeString()}
                   </span>
-                  <span className="text-xs px-2 py-0.5 rounded-md bg-gray-800/50 text-gray-500 border border-gray-700/50 font-light">
-                    {msg.type}
-                  </span>
                 </div>
               </div>
 
-              {/* Message Content */}
-              <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap font-mono bg-black/30 rounded-lg p-3 border border-gray-800/50 ml-3 font-light">
-                {msg.content}
+              {/* Message Content - Natural conversation */}
+              <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap bg-black/20 rounded-lg p-3 border border-gray-800/30 ml-3 font-light">
+                {cleanedContent}
               </div>
             </div>
           );
