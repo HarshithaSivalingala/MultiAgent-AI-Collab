@@ -1,27 +1,25 @@
 """
-Real Claude API integration
-Replace mock responses with actual API calls
+Real Claude API integration (supports Anthropic, OpenRouter, and Gemini)
 """
 import os
-from anthropic import Anthropic
+import aiohttp
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+# Detect which API to use
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+USE_GEMINI = bool(GEMINI_API_KEY)
+USE_OPENROUTER = bool(OPENROUTER_API_KEY) and not USE_GEMINI
 
 async def call_claude_api(system_prompt: str, user_message: str, context: str) -> str:
     """
-    Call Claude API with agent-specific system prompt
-    
-    Args:
-        system_prompt: Agent's role and instructions
-        user_message: Current user request
-        context: Full conversation history
-    
-    Returns:
-        Agent's response as string
+    Call AI API with agent-specific system prompt
+    Supports Gemini, OpenRouter, and Anthropic APIs
     """
     
     # Build the prompt
@@ -34,25 +32,72 @@ Your turn to respond. Remember:
 """
     
     try:
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=1000,
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": full_prompt}
-            ]
-        )
-        
-        return message.content[0].text
-    
+        if USE_GEMINI:
+            return await call_gemini_api(system_prompt, full_prompt)
+        elif USE_OPENROUTER:
+            return await call_openrouter_api(system_prompt, full_prompt)
+        else:
+            return await call_anthropic_api(system_prompt, full_prompt)
     except Exception as e:
         return f"[API Error: {str(e)}]"
+
+async def call_gemini_api(system_prompt: str, user_prompt: str) -> str:
+    """Call Google Gemini API - WORKING VERSION"""
+    import google.generativeai as genai
+    
+    genai.configure(api_key=GEMINI_API_KEY)
+    
+    # Combine system prompt with user prompt
+    full_prompt = f"""{system_prompt}
+
+{user_prompt}"""
+    
+    # Use the FULL model path - this is the fix!
+    model = genai.GenerativeModel('models/gemini-2.5-flash')
+    response = model.generate_content(full_prompt)
+    
+    return response.text
+
+async def call_openrouter_api(system_prompt: str, user_prompt: str) -> str:
+    """Call OpenRouter API"""
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "anthropic/claude-3.5-sonnet",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "max_tokens": 1000
+            }
+        ) as response:
+            data = await response.json()
+            return data["choices"][0]["message"]["content"]
+
+async def call_anthropic_api(system_prompt: str, user_prompt: str) -> str:
+    """Call Anthropic API directly"""
+    from anthropic import Anthropic
+    client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    
+    message = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1000,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}]
+    )
+    
+    return message.content[0].text
 
 # ============================================
 # MOCK MODE (for testing without API key)
 # ============================================
 
-MOCK_MODE = not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") == "your_key_here"
+MOCK_MODE = not (GEMINI_API_KEY or OPENROUTER_API_KEY or ANTHROPIC_API_KEY)
 
 async def call_agent(agent_name: str, system_prompt: str, context: str) -> str:
     """

@@ -25,46 +25,110 @@ app.add_middleware(
 # ============================================
 
 AGENT_PROMPTS = {
-    "Planner": """You are the Planner agent. Your role:
-- Break down user requests into clear tasks
-- Assign work to other agents
-- Coordinate the overall strategy
+    "Planner": """You are the Planner agent - the project manager who coordinates the team.
 
-When you need other agents, send A2A messages in this format:
-{"to": "Researcher", "type": "task", "content": "your message"}
+Speak naturally like a real PM in a chat, not like a robot!
 
-Keep responses short and actionable.""",
+Your role:
+- Break down the user's request into clear steps
+- Assign work to team members naturally
+- Keep things organized
 
-    "Researcher": """You are the Researcher agent. Your role:
-- Find information and best practices
-- Use web-search tool when needed
-- Provide factual, researched answers
+CRITICAL: If the user asks for ANY diagram, architecture, design, or visualization:
+- You MUST tell the Builder to create a diagram
+- Be specific about what to include
 
-To use tools, output:
-TOOL_CALL: web_search("your query")
+Communication style:
+✅ "Hey Researcher, can you look up best practices for shopping cart architecture? We need to know the standard components."
+✅ "Builder, once we have the research, create a diagram showing the complete shopping cart system with all the components."
+✅ "Critic, take a look at what Builder created and let us know if we're missing anything important."
 
-To message agents:
-{"to": "Builder", "type": "info", "content": "your message"}""",
+❌ Don't use JSON: {"to": "Researcher", "type": "task", "content": "..."}
+❌ Don't be robotic: "Assigning task to Researcher agent..."
 
-    "Builder": """You are the Builder agent. Your role:
-- Create diagrams, code, or documentation
-- Use create_diagram or write_note tools
-- Execute the planned solution
+Just chat naturally! Address team members by name and explain what you need.""",
 
-To use tools:
-TOOL_CALL: create_diagram("description")
-TOOL_CALL: write_note("content")
+    "Researcher": """You are the Researcher agent - the knowledge gatherer who finds information.
 
-To message agents:
-{"to": "Critic", "type": "review_request", "content": "your message"}""",
+Speak naturally like you're chatting with teammates!
 
-    "Critic": """You are the Critic agent. Your role:
-- Review work from other agents
-- Identify problems or improvements
-- Validate the final solution
+Your role:
+- Look things up when needed
+- Share what you learn conversationally
+- Help the team understand the research
 
-Keep feedback constructive. Message format:
-{"to": "Builder", "type": "feedback", "content": "your message"}"""
+Communication style:
+✅ "Let me search for that... Okay, I found that shopping cart systems typically use Redis for caching, PostgreSQL for data storage, and a separate payment gateway. Most also include session management and inventory tracking."
+✅ "Based on my research, here are the key components: user auth, product catalog, cart service, payment processing, and order management."
+✅ "I'm seeing that best practices include using microservices, implementing caching layers, and having message queues for async operations."
+
+❌ Don't say: "TOOL_CALL: web_search('query')"
+❌ Don't say: "Executing search..."
+❌ Don't use: {"to": "...", "content": "..."}
+
+When you need to search, just naturally mention you're looking it up, then share findings like you're explaining to a friend.
+
+IMPORTANT: Even if search returns "No results", share your general knowledge about the topic.""",
+
+    "Builder": """You are the Builder agent - the creative one who makes things.
+
+Speak naturally like an excited developer showing their work!
+
+Your role:
+- Create diagrams and documentation
+- Bring ideas to life
+- Build what the team needs
+
+CRITICAL: When anyone mentions "diagram", "architecture", "design", "system", or similar - CREATE IT IMMEDIATELY!
+
+Communication style:
+✅ "Got it! Let me create that architecture diagram... I'll include the web app, cart service, Redis cache, PostgreSQL database, and payment gateway."
+✅ "Creating the shopping cart architecture now with all those components Researcher mentioned - this is going to show the full data flow!"
+✅ "Done! I've created a diagram showing the complete system. Critic, mind taking a look?"
+
+When creating diagrams, just naturally describe what you're building, then create it.
+To actually create: Still use TOOL_CALL: create_diagram("description") but wrap it naturally in conversation.
+
+Example:
+"Perfect, I'll build that now!
+
+TOOL_CALL: create_diagram("shopping cart with Redis, PostgreSQL, payment gateway")
+
+There we go - created a complete architecture diagram!"
+
+❌ Don't just output: "TOOL_CALL: create_diagram(...)"
+❌ Don't use JSON: {"to": "Critic", ...}
+❌ Don't wait or ask questions - just build it!
+
+Always be enthusiastic about creating things!""",
+
+    "Critic": """You are the Critic agent - the thoughtful reviewer who helps improve work.
+
+Speak like a supportive team lead giving constructive feedback!
+
+Your role:
+- Review what others created
+- Give specific, actionable suggestions
+- Help make things better
+
+Communication style:
+✅ "Nice work on the diagram! I can see you've got the core components covered. A few suggestions to make it production-ready: add a rate limiter between the API gateway and backend to prevent overload, include a circuit breaker for error handling, and maybe an analytics service to track user behavior. These additions would really strengthen the architecture!"
+
+✅ "Looking good! The foundation is solid. For the next version, consider adding: a message queue like RabbitMQ for handling order processing asynchronously, a CDN for serving static assets faster, and a separate auth service. These would scale better under load."
+
+✅ "Great start! The data flow makes sense. To improve it, I'd add: monitoring/logging infrastructure, a backup database for failover, and API versioning. Want to incorporate these?"
+
+❌ Don't say: "Looks good" (too vague!)
+❌ Don't use JSON: {"to": "Builder", ...}
+❌ Don't just list issues - explain WHY they matter
+
+Always:
+- Start with something positive
+- Give SPECIFIC suggestions with component names
+- Explain the benefit of each suggestion
+- Be encouraging, not harsh
+
+Format suggestions as natural conversation, not bullet lists (unless it flows better)."""
 }
 
 # ============================================
@@ -187,27 +251,41 @@ async def start_collaboration(request: dict):
 
 async def orchestrate_agents(user_prompt: str):
     """
-    Main orchestration loop - runs agents in turns
+    Main orchestration loop with feedback iteration
+    Flow: Planner → Researcher → Builder → Critic → [Builder again if feedback] → Done
     """
-    max_turns = 8
-    current_turn = 0
-    
-    # Build context from history
     context = f"User request: {user_prompt}\n\n"
     
-    while current_turn < max_turns:
-        agent = agents[current_turn % len(agents)]
+    # Check if user wants a diagram
+    diagram_keywords = ['diagram', 'architecture', 'design', 'system', 'flow', 'cart', 'visual', 'structure']
+    needs_diagram = any(keyword in user_prompt.lower() for keyword in diagram_keywords)
+    
+    # State tracking
+    diagram_created = False
+    
+    # Define the flow with potential iteration
+    # Normal: Planner → Researcher → Builder → Critic → Done
+    # With feedback: Planner → Researcher → Builder → Critic → Builder (improved) → Done
+    agent_flow = ["Planner", "Researcher", "Builder", "Critic"]
+    
+    for turn_num, agent_name in enumerate(agent_flow):
+        agent = next(a for a in agents if a.name == agent_name)
+        
+        print(f"\n{'='*50}")
+        print(f"Turn {turn_num + 1}: {agent_name}")
+        print(f"{'='*50}")
+        
+        # Special instruction for Builder after Critic feedback
+        if agent_name == "Builder" and turn_num > 3:  # This is iteration after Critic
+            context += "\n[SYSTEM INSTRUCTION]: The Critic has reviewed your diagram and provided feedback. Please create an IMPROVED diagram that incorporates their suggestions. Call create_diagram again with the improvements.\n"
         
         # Call agent
         response = await call_claude_agent(agent.name, context)
         
-        # Parse A2A messages
+        # Parse and broadcast
         a2a_messages = parse_a2a_messages(response)
-        
-        # Parse tool calls
         tool_calls = parse_tool_calls(response)
         
-        # Create agent message
         agent_msg = Message(
             from_agent=agent.name,
             to_agent=a2a_messages[0]["to"] if a2a_messages else None,
@@ -220,16 +298,23 @@ async def orchestrate_agents(user_prompt: str):
         
         # Handle tool calls
         for tool in tool_calls:
-            # Parse tool call (simple parsing for hackathon)
-            tool_result = {"status": "executed", "output": "mock result"}
+            tool_result = {"status": "executed"}
             
-            # Try to execute real tool
             if "web_search" in tool['raw']:
                 query = tool['raw'].split('"')[1] if '"' in tool['raw'] else "query"
                 tool_result = tool_registry.execute("web_search", query=query)
+                
             elif "create_diagram" in tool['raw']:
                 desc = tool['raw'].split('"')[1] if '"' in tool['raw'] else "diagram"
                 tool_result = tool_registry.execute("create_diagram", description=desc)
+                
+                # Mark version
+                if not diagram_created:
+                    diagram_created = True
+                    tool_result["version"] = "v1 - Initial diagram"
+                else:
+                    tool_result["version"] = "v2 - Improved based on Critic feedback ✨"
+                    
             elif "write_note" in tool['raw']:
                 content = tool['raw'].split('"')[1] if '"' in tool['raw'] else "note"
                 tool_result = tool_registry.execute("write_note", content=content)
@@ -247,8 +332,37 @@ async def orchestrate_agents(user_prompt: str):
         # Update context
         context += f"\n{agent.name}: {response}\n"
         
-        current_turn += 1
-        await asyncio.sleep(2)  # Pause between turns
+        # After Critic, check if we should iterate
+        if agent_name == "Critic" and diagram_created:
+            # Check if Critic suggested improvements
+            improvement_keywords = ['improve', 'add', 'consider', 'missing', 'should', 'suggest', 'could', 'recommend', 'better']
+            has_suggestions = any(word in response.lower() for word in improvement_keywords)
+            
+            if has_suggestions and len(agent_flow) == 4:
+                # Add Builder for one more iteration
+                agent_flow.append("Builder")
+                print("\n🔄 Critic provided feedback - routing back to Builder for improvements")
+        
+        # Rate limit: 12 seconds between API calls
+        await asyncio.sleep(12)
+    
+    # Fallback
+    if needs_diagram and not diagram_created:
+        print("\n⚠️ Fallback: Creating diagram as none was created")
+        tool_result = tool_registry.execute("create_diagram", description=user_prompt)
+        tool_result["version"] = "v1 - Auto-generated"
+        
+        fallback_msg = Message(
+            from_agent="System",
+            to_agent="Builder",
+            type="tool_result",
+            content=json.dumps(tool_result, indent=2),
+            timestamp=datetime.now().isoformat()
+        )
+        conversation_history.append(fallback_msg)
+        await broadcast_message(fallback_msg.dict())
+    
+    print(f"\n✅ Orchestration complete! Total turns: {len(agent_flow)}")
 
 # ============================================
 # WEBSOCKET
